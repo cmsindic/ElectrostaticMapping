@@ -1,0 +1,13 @@
+[ moleculetype ]
+; Name            nrexcl
+HYD         3
+
+[ atoms ]
+;   nr       type  resnr residue  atom   cgnr     charge       mass  typeB    chargeB      massB
+; residue 413 OH  rtp OH   q -1.0
+     1         OB    413     OH     OB      1         -1         16
+     2         HB    413     OH     HB      2          0      1.008   ; qtot -1
+
+[ bonds ]
+;  ai    aj funct            c0            c1            c2            c3
+    1     2     1 

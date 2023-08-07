@@ -20,17 +20,33 @@ class Residue():
         self.res_non_h = [a for a in self.atoms if a.element != 'H']
         self.is_not_water = self.name not in ('HOH', 'SOL')
 
-    def get_dict_values(self, rtp_atoms_dict, rtp_bonds_dict):
+    def get_dict_values(self, rtp_atoms_dict, rtp_bonds_dict, name, forgiving=False):
         ''' Try to find the residue in the dicts of atoms and bonds
         created from lines the the rtp file. Identify if PDB residue
         is in both dictionaries.
         '''
-        try:
-            self.atom_lines = rtp_atoms_dict[self.name]
-            self.bond_lines = rtp_bonds_dict[self.name]
-            self.in_dict = True
-        except:
-            self.in_dict = False
+        assert rtp_atoms_dict.keys() == rtp_bonds_dict.keys()
+        
+        self.has_name_in_dict = False
+        self.atom_nums_match_dict = False
+        
+        if name in rtp_atoms_dict.keys():
+            '''If there aren't an equal number of atoms in
+            the rtp file as in the model from the pdb,then
+            the atom in the rtp is misnamed and is not
+            technically in the dict. If 'forgiving' argument
+            is given as True, ignore this requirement.
+            '''
+            rtp_entry = rtp_atoms_dict[self.name]
+            same_atom_count = len(self.atoms) == len(rtp_entry)
+            if any((same_atom_count, forgiving==True)):
+                self.atom_lines = rtp_atoms_dict[self.name]
+                self.bond_lines = rtp_bonds_dict[self.name]
+                self.in_dict = True
+                return             
+                
+        self.in_dict = False
+        return
 
     def is_good_residue(self):
         ''' Return whether residue is non-water residue that can be
@@ -116,37 +132,57 @@ class Residue():
     def get_atom_charges(self):
         ''' Get atomic partial charge for a given atom.
         '''
-        def assign_charge(atom, op, taken_names=[]):
-            for atom_name_in_rtp, _, charge, _ in self.atom_lines:
-                if atom_name_in_rtp in taken_names:
-                    continue
+        
+        
+        def assign_charge(atom, op, rtp_atoms):
+            ''' Assign atom charge, rename atom, and
+            and update rtp_atoms by remove the atom upon
+            matching charges/names.
+            '''
+            for line in rtp_atoms:
+                atom_name_in_rtp, _, charge, _ = line
+                # Try seeing if model atom has the
+                # same name as the rtp atom
                 if op == 'EQ':
                     cond = atom_name_in_rtp == atom.name
+                # For atoms that haven't exact names in rtp,
+                # check if part of the atom name is in any of 
+                # the rtp atom names or vice versa
                 elif op == "CONTAINS":
                     c1 = atom_name_in_rtp in atom.name
                     c2 = atom.name in atom_name_in_rtp
                     cond = c1 or c2
                 if cond:
-                    if op == "CONTAINS":
-                        print(atom.name, atom_name_in_rtp)
                     atom.name = atom_name_in_rtp
                     atom.charge = charge
-                    return atom
-            return atom
+                    rtp_atoms.remove(line)
+                    return atom, rtp_atoms
+            return atom, rtp_atoms
 
+        rtp_atoms = self.atom_lines.copy()
         for atom in self.atoms:
             atom.charge = None
-            atom = assign_charge(atom, op='EQ')
-
-        assigned_atoms = [atom.name for atom in self.atoms
-                          if atom.charge != None]
-
+            atom, rtp_atoms = assign_charge(atom, 'EQ', rtp_atoms)
+        
         for atom in self.atoms:
-            atom = assign_charge(atom, op='CONTAINS', taken_names=assigned_atoms)
+            if atom.charge is None:
+                atom, rtp_atoms = assign_charge(atom, 'CONTAINS', rtp_atoms)
+        
+        self.get_bond_partners()
+        self.sort_hydrogen()
+        
+        for atom in self.atoms:
+            if atom.charge is None:
+                atom, rtp_atoms = assign_charge(atom, 'CONTAINS', rtp_atoms)
+        
+        no_charges = [a.name for a in self.atoms if a.charge == None]
+        assigned_atoms = [a.name for a in self.atoms if a.charge != None]
+        '''
+        if len(no_charges) > 0:
+            print(self.name,len(self.atom_lines),len(self.atoms))
+            print(no_charges)
+            print(rtp_atoms)'''
 
-        no_charges = [atom.name for atom in self.atoms if atom.charge == None]
-        assigned_atoms = [atom.name for atom in self.atoms
-                          if atom.charge != None]
         '''
         if len(no_charges) != 0:
             print(self.name, self.id)
@@ -255,7 +291,28 @@ class ResiduesInFile:
         '''
         rtp_atoms, rtp_bonds = fileProcessing.RTP.fetch_rtp(rtp_file)
         for residue in residues:
-            residue.get_dict_values(rtp_atoms, rtp_bonds)
+            residue.get_dict_values(rtp_atoms, rtp_bonds, residue.name)
+            if not residue.in_dict:
+                alt_names = [k for k in rtp_atoms if residue.name in k]
+                for name in alt_names:
+                    residue.get_dict_values(rtp_atoms, rtp_bonds, name)
+                    if residue.in_dict:
+                        break
+            if not residue.in_dict:
+                residue.get_dict_values(rtp_atoms,
+                                        rtp_bonds,
+                                        residue.name,
+                                        forgiving=True)
+                if residue.in_dict:
+                    w = '''RTP entry for residue {} {} has a different 
+                           number of atoms than the model residue. 
+                           Accepting this residue anyway.'''
+                    warnings.warn(w.format(residue.name, residue.id))
+        residues_not_in_dict = [r for r in residues if not r.in_dict]
+        for r in residues_not_in_dict:
+            w = 'Residue {} {} not found in rtp file.'
+            warnings.warn(w.format(r.name, r.id))
+            
         return residues
 
     def process_solvent(self, solvent):

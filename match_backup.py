@@ -19,7 +19,8 @@ def fetch_rtp(rtp_file):
     '''
 
     class RTPline():
-        ''' To contain information about lines in RTP file'''
+        ''' To contain information about lines in RTP file.
+        '''
         def __init__(self,line):
             self.is_resline = line[0] == '['
             self.is_bond_declaration = 'bond' in line

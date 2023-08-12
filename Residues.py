@@ -1,9 +1,16 @@
-from Bio.PDB import *
+import os
+import Bio
+import requests
+import warnings
 import fileProcessing.RTP
 import fileProcessing.parse as parse
 from fileProcessing.PDB import preprocess_pdb
 from spatial.cartesian import *
-import warnings
+from textwrap import dedent
+from lxml import etree
+from io import StringIO
+from Bio.PDB import *
+
 
 
 class Residue():
@@ -19,40 +26,76 @@ class Residue():
         self.res_h = [a for a in self.atoms if a.element == 'H']
         self.res_non_h = [a for a in self.atoms if a.element != 'H']
         self.is_not_water = self.name not in ('HOH', 'SOL')
+    
+    
+    def elements_match_rtp(self, rtp_atoms_entry):
+        # get elements of the residue's atoms
+        elements = [atom.element for atom in self.atoms].copy()
+        # first char in RTP atom name is presumably the element 
+        rtp_elements = [a[0][0] for a in rtp_atoms_entry.copy()]
+        # dict counting the frequency of each element in the residue
+        frequency_dict = {a:elements.count(a) for a in set(elements)}
+        # make sure there are at least the same number of unique elements
+        assert len(set(rtp_elements) - frequency_dict.keys()) == 0
+        # remove a counter for each element as encountered in rtp entry
+        for e in rtp_elements:
+            frequency_dict[e] -= 1
+        for k, v in frequency_dict.items():
+            if v != 0: return False
+        return True
+            
+                    
+    def search_rtp_dict(self, rtp_atoms_dict, rtp_bonds_dict, name):
+        ''' See if residue is in dicts of rtp atom lines and rtp bond lines.
+        '''
+        assert rtp_atoms_dict.keys() == rtp_bonds_dict.keys()  
+        
+        if not name in rtp_atoms_dict.keys():
+            self.in_dict = False
+            return   
+            
+        else:
+            rtp_entry = rtp_atoms_dict[name]
+            same_atom_count = len(self.atoms) == len(rtp_entry)
+            if same_atom_count and self.elements_match_rtp(rtp_entry):
+                self.atom_lines = rtp_atoms_dict[name]
+                self.bond_lines = rtp_bonds_dict[name]
+                self.in_dict = True
+                return     
+            else:
+                self.in_dict = False
+                return
 
-    def get_dict_values(self, rtp_atoms_dict, rtp_bonds_dict, name, forgiving=False):
+    
+    def attempt_dict_match(self, rtp_atoms, rtp_bonds):
         ''' Try to find the residue in the dicts of atoms and bonds
         created from lines the the rtp file. Identify if PDB residue
-        is in both dictionaries.
+        is in both dictionaries. 
         '''
-        assert rtp_atoms_dict.keys() == rtp_bonds_dict.keys()
         
-        self.has_name_in_dict = False
-        self.atom_nums_match_dict = False
+        # 'HIS' is generally not in RTP file, try 'HIE'
+        #if self.name == 'HIS': self.name = 'HIE'
         
-        if name in rtp_atoms_dict.keys():
-            '''If there aren't an equal number of atoms in
-            the rtp file as in the model from the pdb,then
-            the atom in the rtp is misnamed and is not
-            technically in the dict. If 'forgiving' argument
-            is given as True, ignore this requirement.
-            '''
-            rtp_entry = rtp_atoms_dict[self.name]
-            same_atom_count = len(self.atoms) == len(rtp_entry)
-            if any((same_atom_count, forgiving==True)):
-                self.atom_lines = rtp_atoms_dict[self.name]
-                self.bond_lines = rtp_bonds_dict[self.name]
-                self.in_dict = True
-                return             
+        # see if entirety of residue data is found in rtp file
+        self.search_rtp_dict(rtp_atoms, rtp_bonds, self.name)
+        
+        # if not, the residue may be a variation
+        if not self.in_dict:
+            
+            # variations of HIS are specially named in the RTP file
+            if self.name == 'HIS':
+                alt_names = []
+                for n in ('HIE','HID','HIP'):
+                    alt_names += [x for x in rtp_atoms.keys() if n in x]
+            else:
+                # e.g. ASN may be CASN in the rtp file ('ASN' is in 'CASN')
+                alt_names = (k for k in rtp_atoms.keys() if self.name in k)
                 
-        self.in_dict = False
-        return
+            # search the RTP dicts for any of the new alt_names
+            for name in alt_names:
+                self.search_rtp_dict(rtp_atoms, rtp_bonds, name)
+                if self.in_dict: break
 
-    def is_good_residue(self):
-        ''' Return whether residue is non-water residue that can be
-        found in the rtp file (atom/bond dict).
-        '''
-        return self.is_not_water and self.in_dict
 
     def get_bond_partners(self):
         ''' Get bond partners for a given atom.
@@ -88,6 +131,7 @@ class Residue():
             atom.bond_partners = [get_partner(atom, p) for p in pairs]
             atom.rtp_hydrogen = [a for a in atom.bond_partners if a[0]=='H']
 
+
     def sort_hydrogen(self):
         ''' Translate H names in pdb with H charges in
         bonds list from RTP to assign charges to pdb H.
@@ -95,9 +139,12 @@ class Residue():
         # get list of all H in residue, per RTP
         self.rtp_hydrogen = []
         for atom in self.res_non_h:
+            # add H bonded to atom to H belonging to res
             self.rtp_hydrogen += atom.rtp_hydrogen
-            atom.n_children = len(atom.rtp_hydrogen) # n H bonded to atom
-            atom.bonded_h = [] # init empty array of H assigned to atom
+            # n H bonded to atom
+            atom.n_children = len(atom.rtp_hydrogen) 
+            # init empty array of H assigned to atom
+            atom.bonded_h = [] 
 
         def closest_atom_to(h):
             ''' Get the closest atom to a given hydrogen.
@@ -129,69 +176,86 @@ class Residue():
             for i,h in enumerate(atom.bonded_h):
                 h.name = atom.rtp_hydrogen[i]
 
+
     def get_atom_charges(self):
         ''' Get atomic partial charge for a given atom.
         '''
         
+        def print_guess_message(resname, res_id,
+                                atom_name, rtp_name):
+            ''' Warning to notify user of atoms that are guessed.
+            '''
+            m = dedent("For residue {} {}: " + "guessing that " + 
+                       "model atom {} is atom {} " + "in the RTP file")      
+            print(m.format(resname, res_id, atom_name, rtp_name))
         
         def assign_charge(atom, op, rtp_atoms):
             ''' Assign atom charge, rename atom, and
             and update rtp_atoms by remove the atom upon
             matching charges/names.
-            '''
-            for line in rtp_atoms:
-                atom_name_in_rtp, _, charge, _ = line
-                # Try seeing if model atom has the
-                # same name as the rtp atom
-                if op == 'EQ':
-                    cond = atom_name_in_rtp == atom.name
-                # For atoms that haven't exact names in rtp,
-                # check if part of the atom name is in any of 
-                # the rtp atom names or vice versa
-                elif op == "CONTAINS":
-                    c1 = atom_name_in_rtp in atom.name
-                    c2 = atom.name in atom_name_in_rtp
-                    cond = c1 or c2
-                if cond:
-                    atom.name = atom_name_in_rtp
-                    atom.charge = charge
-                    rtp_atoms.remove(line)
-                    return atom, rtp_atoms
+            '''                              
+            # exact match between rtp name (x[0]) and model atom name
+            if op == 'EQ':
+                match = lambda x: x[0] == atom.name  
+            # match between 1st char of rtp name & 1st char of model atom name
+            elif op == 'FIRST_CHAR':
+                match = lambda x: x[0][0] == atom.name[0]
+                
+            # recall: line = name_in_rtp, _, charge, _
+            matches = [line for line in rtp_atoms if match(line)]
+            
+            # if there are matches between model atom and rtp atom
+            if len(matches) > 0:
+                # select the first 
+                rtp_name, _, charge, _ = matches[0] 
+                # print notification of atom guess if not exact match
+                if op == 'FIRST_CHAR':
+                    print_guess_message(self.name, self.id,
+                                        atom.name, rtp_name)
+                # update atom name and charge
+                atom.name, atom.charge = rtp_name, charge 
+                # remove the matching rtp line from candidates
+                rtp_atoms.remove(matches[0])
+
             return atom, rtp_atoms
 
+        # assign_charge will gradually remove matched atoms
+        # from self.atom_lines as they are assigned, so give
+        # a copy as an argument instead
         rtp_atoms = self.atom_lines.copy()
+        
+        # try to find atoms in RTP that exactly match names in model
         for atom in self.atoms:
             atom.charge = None
             atom, rtp_atoms = assign_charge(atom, 'EQ', rtp_atoms)
         
+        # this will rename atoms with partially matching names
+        chargeless_atoms = [a for a in self.atoms if a.charge==None]
+        for atom in chargeless_atoms:
+            atom, rtp_atoms = assign_charge(atom, 'FIRST_CHAR', rtp_atoms)
+    
+    
+    def check_for_chargeless_atoms(self):
+        ''' Warn user about atoms that are have not been assigned charges.
+        '''
+        w = "Atom {} belonging to residue {} {} has no assigned charge"
+        chargeless_atoms = [a for a in self.atoms if a.charge == None]
+        for atom in chargeless_atoms:        
+            warnings.warn(w.format(atom.fullname, self.name, self.id))
+          
+          
+    def charges(self):
+        ''' Yield charges of atoms in residue.
+        '''
         for atom in self.atoms:
-            if atom.charge is None:
-                atom, rtp_atoms = assign_charge(atom, 'CONTAINS', rtp_atoms)
-        
-        self.get_bond_partners()
-        self.sort_hydrogen()
-        
+            yield atom.charge
+         
+         
+    def coords(self):
+        ''' Yield coordinates of atoms in residue.
+        '''
         for atom in self.atoms:
-            if atom.charge is None:
-                atom, rtp_atoms = assign_charge(atom, 'CONTAINS', rtp_atoms)
-        
-        no_charges = [a.name for a in self.atoms if a.charge == None]
-        assigned_atoms = [a.name for a in self.atoms if a.charge != None]
-        '''
-        if len(no_charges) > 0:
-            print(self.name,len(self.atom_lines),len(self.atoms))
-            print(no_charges)
-            print(rtp_atoms)'''
-
-        '''
-        if len(no_charges) != 0:
-            print(self.name, self.id)
-            print(no_charges)
-            print([a[0] for a in self.atom_lines if not a[0] in assigned_atoms])
-            print()
-        '''
-
-
+            yield atom.coord
 
 
 class Water(Residue):
@@ -201,7 +265,6 @@ class Water(Residue):
     def __init__(self, residue):
         Residue.__init__(self, residue.bio_res_class)
         self.coords = [atom.coord for atom in self.atoms]
-
         self.hydrogen = []
         for atom in residue.atoms:
             if atom.element == 'O':
@@ -209,15 +272,18 @@ class Water(Residue):
             elif atom.element == 'H':
                 self.hydrogen.append(atom)
             atom.set_parent(self)
-
+        
+        # Water must have 1 oxygen and 2 hydrogen
         assert self.oxygen is not None
         assert len(self.hydrogen) == 2
 
-    def oxygen_coordinates(self):
-        return self.oxygen.coord
 
     def H_O_bond_vector(self, hydrogen):
-        return hydrogen.coord - self.oxygen_coordinates()
+        ''' Get the bond vector between a hydrogen and its 
+        parent oxygen atom. Important for projecting electric
+        field along this bond vector. See ElectricField.py.
+        '''
+        return hydrogen.coord - self.oxygen.coord
 
 
 class ActiveSite():
@@ -226,39 +292,98 @@ class ActiveSite():
     def __init__(self, index_file, pdb_file):
         self.index_file = index_file
         self.pdb_file = pdb_file
+        self.pdb_id = os.path.split(pdb_file)[-1].split('.')[0]
 
-    def read_pdb(self):
-        ''' Get lines from pdb file.
+
+    def get_rcsb_tree(self):
+        ''' Return the xml tree of the rscb page.
         '''
-        with open(self.pdb_file, 'r') as f:
-            return tuple(line for line in f)
+        parser = etree.HTMLParser()
+        base_rcsb_url = 'https://www.rcsb.org/structure/'
+        url = base_rcsb_url + self.pdb_id
+        page = requests.get(url)
+        html = page.content.decode("utf-8")
+        return etree.parse(StringIO(html), parser=parser)
 
-    def read_index(self):
-        ''' Get AS line numbers from index file.
+
+    def fetch_uniprot_id(self):
+        ''' Resolve the identity of the uniprot object linked 
+        to the pdb model by extracting the name from the uniprot 
+        url that is linked in the rscb page for the model.
         '''
-        with open(self.index_file, 'r') as f:
-            # there is only 1 line in index files
-            index_file_lines = [line for line in f][0]
-            return parse.str2list(index_file_lines)
-
+        tree = self.get_rcsb_tree()
+        # Get anchor tags
+        refs = tree.xpath("//a")
+        # Get refs
+        links = [link.get('href', '') for link in refs]
+        # Isolate uniprot url links
+        uniprot_links = [l for l in links if 'uniprot.org' in l]
+        # Assert there is only 1 uniprot link
+        assert len(uniprot_links)==1
+        # Ex: 'https://www.uniprot.org/uniprot/P00942' --> 'P00942'
+        return uniprot_links[0].split('/')[-1]
+        
+        
+    def fetch_uniprot_text(self):
+        ''' Get the raw text of the uniprot text file corresponding
+        with the pdb model.
+        '''
+        uniprot_base_url = 'https://rest.uniprot.org/uniprotkb/'
+        uniprot_id = self.fetch_uniprot_id()
+        url = uniprot_base_url + uniprot_id + '.txt'
+        page = requests.get(url)
+        return page.text
+        
+        
+    def resolve_res_ids(self):
+        ''' Extract the residue ID numbers of the active site
+        residues from the uniprot text file for the pdb model.
+        '''
+        # Text file from uniprot detailing model features
+        raw_text = self.fetch_uniprot_text()
+        # Split text into list of lines
+        text = raw_text.split('\n')
+        # Split each line into list of words
+        parsed = (parse.text_to_list(line) for line in text)
+        # Isolate lines containing active site info
+        act_site_lines = (line for line in parsed if 'ACT_SITE' in line)
+        # Residue IDs are the last words in the lines
+        return tuple(int(line[-1]) for line in act_site_lines)
+        
+                
     def get_residues(self, residues):
         ''' Get residues belonging to the active site.
         '''
-        line_numbers = self.read_index()
-        pdb_lines = self.read_pdb()
-        as_lines = [parse.pdbline(pdb_lines[i]) for i in line_numbers]
-        # a[3] is residue name, a[5] is residue id
-        as_res_in_pdb = {(a[3], int(a[5])) for a in as_lines}
-        self.as_res = [r for r in residues if (r.name, r.id) in as_res_in_pdb]
+        act_site_ids = self.resolve_res_ids()
+        self.as_res = [r for r in residues if r.id in act_site_ids]
+       
+        print("Processing active site")
+        print("Active site residues: ")
+        
+        #### Ask if assumed active site residues are true ####
+        
+        # Because thare are often multiple chains, make a 
+        # unique list of residue names/ids to inquire about
+        no_dup = list(set((r.name, r.id) for r in self.as_res))
+        
+        # Ask if each residue is valid
+        for res in no_dup:
+            print(res[0], res[1])
+            keep = bool(input("Keep this residue? (y/n) \n"))
+            if not keep:
+                no_dup.remove(res)
+        
+        # Residues will now be removed from multiple chains,
+        # even though user is asked one the basis of name & id
+        self.as_res = [r for r in self.as_res if (r.name, r.id) in no_dup]
+
 
     def get_coords(self):
         ''' Get coordinates of all atoms in the active site.
         '''
-        self.coords = []
-        for r in self.as_res:
-            for a in r.atoms:
-                self.coords.append(a.coord)
-
+        self.coords = [a.coord for r in self.as_res for a in r.atoms]
+        
+        
     def get_central_point(self):
         ''' Get central point of coords of active site.
         '''
@@ -285,67 +410,39 @@ class ResiduesInFile:
         struct = parser.get_structure(self.pdb_code, pdb_file)
         return [Residue(r) for r in struct.get_residues()]
 
-    def match_atoms_and_bonds(self, residues, rtp_file):
+    def fetch_rtp_data(self, residues, rtp_file):
         ''' Read rtp (main unless specified) and get rtp data for each
-        residue in residues.
+        residue in 'residues'.
         '''
+        # lines from rtp file containing atom and bond information 
+        # for each residue, in dict format with renames as keys
         rtp_atoms, rtp_bonds = fileProcessing.RTP.fetch_rtp(rtp_file)
         for residue in residues:
-            residue.get_dict_values(rtp_atoms, rtp_bonds, residue.name)
-            if not residue.in_dict:
-                alt_names = [k for k in rtp_atoms if residue.name in k]
-                for name in alt_names:
-                    residue.get_dict_values(rtp_atoms, rtp_bonds, name)
-                    if residue.in_dict:
-                        break
-            if not residue.in_dict:
-                residue.get_dict_values(rtp_atoms,
-                                        rtp_bonds,
-                                        residue.name,
-                                        forgiving=True)
-                if residue.in_dict:
-                    w = '''RTP entry for residue {} {} has a different 
-                           number of atoms than the model residue. 
-                           Accepting this residue anyway.'''
-                    warnings.warn(w.format(residue.name, residue.id))
+            residue.attempt_dict_match(rtp_atoms, rtp_bonds)
+            
         residues_not_in_dict = [r for r in residues if not r.in_dict]
         for r in residues_not_in_dict:
             w = 'Residue {} {} not found in rtp file.'
             warnings.warn(w.format(r.name, r.id))
-            
+        
         return residues
 
     def process_solvent(self, solvent):
-        ''' Differs from process_solute (below) in that histidine
-        is not replaced. Other differences may be added.
+        ''' Get atoms and bonds belonging to water in the RTP.
         '''
-        return self.match_atoms_and_bonds(solvent, self.rtp_file)
+        solvent = self.fetch_rtp_data(solvent, self.rtp_file)
+        return solvent #[Water(s) for s in solvent]
 
     def process_solute(self, solute):
-        ''' Replace histidine name to match RTP file and get
-        atoms and bonds belonging to residues in the RTP.
+        ''' Get atoms and bonds belonging to residues in the RTP.
         '''
-        def replace_his(residue):
-            ''' HIS is not in RTP file. Keep res, change name.
-            '''
-            if residue.name == 'HIS':
-                residue.name = 'HIE'
-            return residue
-
-        for residue in solute:
-            residue = replace_his(residue)
-
-        return self.match_atoms_and_bonds(solute, self.rtp_file)
+        return self.fetch_rtp_data(solute, self.rtp_file)
 
     def separate_components(self, residues):
         ''' Split into solvent (WATER) and solute residues.
         '''
-        solvent, solute = [], []
-        for residue in residues:
-            if residue.is_not_water:
-                solute.append(residue)
-            else:
-                solvent.append(Water(residue))
+        solute = [r for r in residues if r.is_not_water]
+        solvent = [r for r in residues if not r.is_not_water]
         return solvent, solute
 
     def get_residues(self):
@@ -353,22 +450,25 @@ class ResiduesInFile:
         '''
         all_residues = self.extract_residues()
         solvent, solute = self.separate_components(all_residues)
-        solute = self.process_solute(solute)
-        self.bad_residues = [r for r in solute if not r.is_good_residue()]
-        self.solute = [r for r in solute if r.is_good_residue()]
-        self.solvent = self.process_solvent(solvent)
+        self.solute = [r for r in self.process_solute(solute) if r.in_dict]
+        self.bad_residues = [r for r in solute if not r.in_dict]
+        self.solvent = [r for r in self.process_solvent(solvent) if r.in_dict]
         self.residues = self.solute + self.solvent
         self.solute_coords = [a.coord for r in self.solute for a in r.atoms]
         self.solvent_coords = [a.coord for r in self.solvent for a in r.atoms]
+
+    def convert_solvent_to_water_objects(self):
+        ''' Add features to solvent unique to water, namely the identifying 
+        properties of the parent oxygen coordinate and the bond vectors
+        between the H and O of the molecules. 
+        '''
+        self.solvent = [Water(w) for w in self.solvent]
 
     def get_charges_and_coords(self, residues):
         ''' Extract charge and coords of each atom in the file
         of a certain type (solute/solvent/active site, etc..).
         '''
-        unassigned_warning = "Atom{} belonging to " + \
-                             "residue {} {} has no assigned charge"
-
-        charges_and_coords = []
+        charges, coords = [], []
         for residue in residues:
             # get H bonded to non-H
             residue.get_bond_partners()
@@ -378,21 +478,10 @@ class ResiduesInFile:
             residue.get_bond_partners()
             # get charges from RTP, now that H have proper names
             residue.get_atom_charges()
-            # add residue atom info to charges_and_coords
-            for atom in residue.atoms:
-                cnc = (atom.charge, atom.coord)
-                charges_and_coords.append(cnc)
-
-                if atom.charge is None:
-                    #print(atom,residue.atom_lines, residue.atoms)
-                    continue
-                    '''
-                    warnings.warn(
-                        unassigned_warning.format(
-                                atom.fullname,
-                                residue.name,
-                                residue.id
-                            )
-                        )'''
-
-        return [c for c in charges_and_coords if c[0] != None]
+            # check for atoms that are missing charges
+            residue.check_for_chargeless_atoms()
+            # add residue atom info to charges and coords
+            charges += residue.charges()
+            coords += residue.coords()
+            
+        return [c for c in zip(charges, coords) if c[0] != None]

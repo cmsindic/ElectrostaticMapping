@@ -3,6 +3,8 @@ from argparse import ArgumentParser
 from Residues import *
 import ElectricField as ef
 from fileProcessing.PDB import get_solvated_pdb
+from spatial.cartesian import magnitude
+from time import time
 
 parser = ArgumentParser(
     prog='Electrostatic Field Collector',
@@ -43,8 +45,9 @@ active_site = ActiveSite(index_file, original_pdb)
 active_site.get_residues(residues=model.residues)
 active_site.get_coords()
 
-from time import time
 t1 = time()
+
+model.convert_solvent_to_water_objects()
 
 in_enzyme = set(
     w for w in model.solvent
@@ -66,19 +69,36 @@ bulk_solvent = set(model.solvent) - in_enzyme
 in_enzyme -= near_as
 
 def get_field_across_sele(sele, charges_coords):
-    sele = list(sele)
     sele_h = [h for water in sele for h in water.hydrogen]
     return ef.get_avg_e_field(targets=sele_h,
                               charges_coords=charges_coords,
                               exclude=[],
                               cutoff=10)
 
-for sele in (bulk_solvent, in_enzyme, near_as):
-    from spatial.cartesian import magnitude
-    print(magnitude(get_field_across_sele(sele, cac)), len(sele))
+partitions = {'Bulk Solvent    ': bulk_solvent,
+              'Near Enzyme     ': in_enzyme,
+              'Near Active Site': near_as}
+
+print("Average electric field strength on water protons:")
+print("Sample Partition  |  Field Strength (a.u.)  |  N Hydrogen")
+print("---------------------------------------------------------")
+for k, v in partitions.items():
+    sele = list(v)
+    avg_magnitude = magnitude(
+        get_field_across_sele(sele, cac)
+        )
+    avg_magnitude = round(avg_magnitude, 7)
+    print(k, " | ",
+          avg_magnitude,
+          "             | ",
+          len(sele)
+        )
 
 
-print(time()-t1)
+print("Run time:", time()-t1)
+
+
+
 
 '''
 for water in model.solvent:

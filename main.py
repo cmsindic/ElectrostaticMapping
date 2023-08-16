@@ -1,11 +1,12 @@
 import os
 from argparse import ArgumentParser
 from Residues import *
-import ElectricField as ef
 from fileProcessing.PDB import get_solvated_pdb
-from spatial.cartesian import magnitude
+from spatial.cartesian import *
 from time import time
+import ElectricField as ef
 
+t1 = time()
 parser = ArgumentParser(
     prog='Electrostatic Field Collector',
     description="""Map electrostatic fields in a pdb file
@@ -15,41 +16,34 @@ parser = ArgumentParser(
 parser.add_argument('--filename', required=True)
 parser.add_argument('--cutoff', type=float, required=False)
 parser.add_argument('--save', action='store_true', required=False)
-parser.add_argument('--indexdir', type=str,
-                    required=False, default='index_files')
 parser.add_argument('--activesite', action='store_true', required=False)
 parser.add_argument('--grid', action='store_true',required=False)
 parser.add_argument('--solvated', action='store_true',required=False)
 args = parser.parse_args()
 
-original_pdb = args.filename
-pdb_code = os.path.split(original_pdb)[-1][:-4]
-index_file_dir = args.indexdir
-index_file = os.path.join(index_file_dir, pdb_code + '.index')
+pdb = args.filename
+pdb_id = os.path.split(pdb)[-1][:-4]
 rtp_file = 'amber99sb-ildn.ff/aminoacids.rtp'
 
 ''' Get residues from solvated pdb if pdb is solvated using PACKMOL
 or some other method, else get residues from original pdb.'''
-pdb = original_pdb if not args.solvated else get_solvated_pdb(original_pdb)
-model = ResiduesInFile(pdb, pdb_code, rtp_file)
+pdb = pdb if not args.solvated else get_solvated_pdb(main_pdb)
+model = ResiduesInFile(pdb, pdb_id, rtp_file)
 model.get_residues()
 
 # (charge, array([x, y, z])) for all atoms in pdb file
-cac = model.get_charges_and_coords(model.residues)
-charges, coords = tuple(zip(*cac))
+cac = model.get_charges_and_coords(model.get_all_molecules())
 
 ''' Need to collect active site information from original file
 given that the line numbers of the active atoms are taken from
 the file before solvation.'''
-active_site = ActiveSite(index_file, original_pdb)
-active_site.get_residues(residues=model.residues)
-active_site.get_coords()
-
-t1 = time()
+#active_site = ActiveSite(pdb_id)
+#active_site.get_residues(residues=model.residues)
+#active_site.get_coords()
 
 model.convert_solvent_to_water_objects()
 
-in_enzyme = set(
+in_enzyme = list(
     w for w in model.solvent
         if target_near_coords(
             target=w.oxygen.coord,
@@ -57,36 +51,39 @@ in_enzyme = set(
             cutoff=4)
 )
 
+'''
 near_as = set(
     w for w in model.solvent
         if target_near_coords(
             target=w.oxygen.coord,
             coords=active_site.coords,
             cutoff=4)
-)
+)'''
 
-bulk_solvent = set(model.solvent) - in_enzyme
-in_enzyme -= near_as
+bulk_solvent = list(m for m in model.solvent if not m in in_enzyme)
+#in_enzyme -= near_as
+
+
+print(time() - t1)
+
+t1 = time()
 
 def get_field_across_sele(sele, charges_coords):
     sele_h = [h for water in sele for h in water.hydrogen]
     return ef.get_avg_e_field(targets=sele_h,
                               charges_coords=charges_coords,
-                              exclude=[],
-                              cutoff=10)
+                              cutoff=4)
 
 partitions = {'Bulk Solvent    ': bulk_solvent,
-              'Near Enzyme     ': in_enzyme,
-              'Near Active Site': near_as}
+              'Near Enzyme     ': in_enzyme,}
+              #'Near Active Site': near_as}
 
 print("Average electric field strength on water protons:")
 print("Sample Partition  |  Field Strength (a.u.)  |  N Hydrogen")
 print("---------------------------------------------------------")
 for k, v in partitions.items():
     sele = list(v)
-    avg_magnitude = magnitude(
-        get_field_across_sele(sele, cac)
-        )
+    avg_magnitude = get_field_across_sele(sele, cac)
     avg_magnitude = round(avg_magnitude, 7)
     print(k, " | ",
           avg_magnitude,

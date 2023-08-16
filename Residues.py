@@ -173,7 +173,7 @@ class Residue():
 
         # replace name of H in file with name of H in bond
         for atom in self.res_non_h:
-            for i,h in enumerate(atom.bonded_h):
+            for i, h in enumerate(atom.bonded_h):
                 h.name = atom.rtp_hydrogen[i]
 
 
@@ -216,7 +216,6 @@ class Residue():
                 atom.name, atom.charge = rtp_name, charge 
                 # remove the matching rtp line from candidates
                 rtp_atoms.remove(matches[0])
-
             return atom, rtp_atoms
 
         # assign_charge will gradually remove matched atoms
@@ -256,19 +255,32 @@ class Residue():
         '''
         for atom in self.atoms:
             yield atom.coord
+    
+    
+    def get_water_attributes(self):
+        ''' Get properties unique to water, for the identification 
+        of oxygen and hydrogen in each water molecule.
+        '''
+        for atom in self.atoms:
+            self.hydrogen = []
+            if atom.element == 'O':
+                self.oxygen = atom
+            elif 'H' in atom.name:
+                self.hydrogen.append(atom)
+            atom.exclusions = tuple(a.coord for a in self.atoms)
 
-
+"""
 class Water(Residue):
     ''' Special methods for handling water if electrostatic fields
     are to be measured as they are felt by water's components.
     '''
     def __init__(self, residue):
         Residue.__init__(self, residue.bio_res_class)
-        self.coords = [atom.coord for atom in self.atoms]
         self.hydrogen = []
         for atom in residue.atoms:
             if atom.element == 'O':
                 self.oxygen = atom
+                self.oxygen.coord = atom.coord
             elif atom.element == 'H':
                 self.hydrogen.append(atom)
             atom.set_parent(self)
@@ -284,15 +296,14 @@ class Water(Residue):
         field along this bond vector. See ElectricField.py.
         '''
         return hydrogen.coord - self.oxygen.coord
+"""
 
 
 class ActiveSite():
     ''' Methods pertaining to active site information.
     '''
-    def __init__(self, index_file, pdb_file):
-        self.index_file = index_file
-        self.pdb_file = pdb_file
-        self.pdb_id = os.path.split(pdb_file)[-1].split('.')[0]
+    def __init__(self, pdb_id):
+        self.pdb_id = pdb_id
 
 
     def get_rcsb_tree(self):
@@ -356,7 +367,7 @@ class ActiveSite():
         '''
         act_site_ids = self.resolve_res_ids()
         self.as_res = [r for r in residues if r.id in act_site_ids]
-       
+
         print("Processing active site")
         print("Active site residues: ")
         
@@ -396,9 +407,9 @@ class ResiduesInFile:
     all residue data and obtain coordinates and charges of atoms in each
     residue.
     '''
-    def __init__(self, pdb, pdb_code, rtp_file):
+    def __init__(self, pdb, pdb_id, rtp_file):
         self.pdb = pdb
-        self.pdb_code = pdb_code
+        self.pdb_id = pdb_id
         self.rtp_file = rtp_file
 
     def extract_residues(self):
@@ -406,8 +417,8 @@ class ResiduesInFile:
         '''
         print("Reading file {}".format(self.pdb))
         parser = PDBParser(QUIET=True)
-        pdb_file = preprocess_pdb(self.pdb, self.pdb_code, parser)
-        struct = parser.get_structure(self.pdb_code, pdb_file)
+        pdb_file = preprocess_pdb(self.pdb, self.pdb_id, parser)
+        struct = parser.get_structure(self.pdb_id, pdb_file)
         return [Residue(r) for r in struct.get_residues()]
 
     def fetch_rtp_data(self, residues, rtp_file):
@@ -430,17 +441,17 @@ class ResiduesInFile:
     def process_solvent(self, solvent):
         ''' Get atoms and bonds belonging to water in the RTP.
         '''
-        solvent = self.fetch_rtp_data(solvent, self.rtp_file)
-        return solvent #[Water(s) for s in solvent]
+        return self.fetch_rtp_data(solvent, self.rtp_file)
 
     def process_solute(self, solute):
         ''' Get atoms and bonds belonging to residues in the RTP.
         '''
         return self.fetch_rtp_data(solute, self.rtp_file)
 
-    def separate_components(self, residues):
+    def partitions(self):
         ''' Split into solvent (WATER) and solute residues.
         '''
+        residues = self.extract_residues()
         solute = [r for r in residues if r.is_not_water]
         solvent = [r for r in residues if not r.is_not_water]
         return solvent, solute
@@ -448,22 +459,24 @@ class ResiduesInFile:
     def get_residues(self):
         ''' Get all residues in file.
         '''
-        all_residues = self.extract_residues()
-        solvent, solute = self.separate_components(all_residues)
+        solvent, solute = self.partitions()
         self.solute = [r for r in self.process_solute(solute) if r.in_dict]
-        self.bad_residues = [r for r in solute if not r.in_dict]
         self.solvent = [r for r in self.process_solvent(solvent) if r.in_dict]
-        self.residues = self.solute + self.solvent
         self.solute_coords = [a.coord for r in self.solute for a in r.atoms]
-        self.solvent_coords = [a.coord for r in self.solvent for a in r.atoms]
+    
+    def get_all_molecules(self):
+        ''' Return all residues in model.
+        '''
+        return tuple(self.solute + self.solvent)
 
     def convert_solvent_to_water_objects(self):
         ''' Add features to solvent unique to water, namely the identifying 
         properties of the parent oxygen coordinate and the bond vectors
         between the H and O of the molecules. 
         '''
-        self.solvent = [Water(w) for w in self.solvent]
-
+        for wat in self.solvent:
+            wat.get_water_attributes()
+            
     def get_charges_and_coords(self, residues):
         ''' Extract charge and coords of each atom in the file
         of a certain type (solute/solvent/active site, etc..).
@@ -484,4 +497,4 @@ class ResiduesInFile:
             charges += residue.charges()
             coords += residue.coords()
             
-        return [c for c in zip(charges, coords) if c[0] != None]
+        return tuple(c for c in zip(charges, coords) if c[0] != None)

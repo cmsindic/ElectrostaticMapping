@@ -17,17 +17,31 @@ def dist(x, y):
     return d**0.5
 
 
+def dist_le_cutoff(p1, p2, cutoff):
+    x1, y1, z1 = p1
+    x2, y2, z2 = p2
+    if abs(x1 - x2) > cutoff:
+        return False
+    if abs(y1 - y2) > cutoff:
+        return False
+    if abs(z1-z2) > cutoff:
+        return False
+    if dist(p1, p2) < cutoff:
+        return True
+    else:
+        return False
+
 def target_near_coords(target, coords, cutoff):
     ''' Check if target coord is within cutoff of
     any of coords.
     '''
     for c in coords:
-        if dist(target, c) < cutoff:
+        if dist_le_cutoff(target, c, cutoff):
             return True
     else:
         return False
-
-
+        
+        
 class Cube:
     def __init__(self, p1, p2, edge_length):
         self.p1 = np.array(p1)

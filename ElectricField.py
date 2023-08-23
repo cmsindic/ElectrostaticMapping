@@ -1,4 +1,5 @@
 from spatial.cartesian import *
+from scipy.spatial import distance_matrix
 import Bio
 
 # coulomb constant
@@ -51,7 +52,9 @@ def get_avg_e_field(targets, charges_coords, cutoff=100):
     field_sum = 0
     for atom in iter(targets):
         ac = atom.coord
-        loc = [c for c in charges_coords if dist_le_cutoff(ac, c[1], cutoff)]
+        _, coords = zip(*charges_coords)
+        d = enumerate(distance_matrix([ac], coords)[0])
+        loc = [charges_coords[i] for i, v in d if v < cutoff]
         het = tuple(c for c in loc if keep(c[1], atom.exclusions))
         field_sum += electric_field(target=ac, charges_coords=het)
         

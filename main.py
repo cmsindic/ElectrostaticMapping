@@ -5,6 +5,7 @@ from fileProcessing.PDB import get_solvated_pdb
 from spatial.cartesian import *
 from time import time
 import ElectricField as ef
+from scipy.spatial import distance_matrix
 
 t1 = time()
 parser = ArgumentParser(
@@ -37,9 +38,9 @@ cac = model.get_charges_and_coords(model.get_all_molecules())
 ''' Need to collect active site information from original file
 given that the line numbers of the active atoms are taken from
 the file before solvation.'''
-#active_site = ActiveSite(pdb_id)
-#active_site.get_residues(residues=model.residues)
-#active_site.get_coords()
+active_site = ActiveSite(pdb_id)
+active_site.get_residues(residues=model.get_all_molecules())
+active_site.get_coords()
 
 model.convert_solvent_to_water_objects()
 
@@ -51,17 +52,16 @@ in_enzyme = list(
             cutoff=4)
 )
 
-'''
-near_as = set(
+near_as = list(
     w for w in model.solvent
         if target_near_coords(
             target=w.oxygen.coord,
             coords=active_site.coords,
             cutoff=4)
-)'''
+)
 
 bulk_solvent = list(m for m in model.solvent if not m in in_enzyme)
-#in_enzyme -= near_as
+in_enzyme = [w for w in in_enzyme if not w in near_as]
 
 
 print(time() - t1)
@@ -75,8 +75,8 @@ def get_field_across_sele(sele, charges_coords):
                               cutoff=4)
 
 partitions = {'Bulk Solvent    ': bulk_solvent,
-              'Near Enzyme     ': in_enzyme,}
-              #'Near Active Site': near_as}
+              'Near Enzyme     ': in_enzyme,
+              'Near Active Site': near_as}
 
 print("Average electric field strength on water protons:")
 print("Sample Partition  |  Field Strength (a.u.)  |  N Hydrogen")

@@ -21,32 +21,48 @@ def remove_duplicates(pdb, pdb_code, parser):
     # save tailored structure
     io = PDBIO()
     io.set_structure(struct)
-    file_wo_duplicates = pdb_code + '_no_dup.pdb'
+    file_wo_duplicates = os.path.join("TEMP", pdb_code + '_no_dup.pdb')
     io.save(file_wo_duplicates, select=NotDisordered())
 
     # return file name
     return file_wo_duplicates
 
 
-def add_hydrogen(pdb, pdb_code):
+
+def add_hydrogen(pdb_path):
     ''' Add hydrogen to pdb file.
+    Overwrite file with result.
     '''
-    pdb_with_hydrogen = pdb_code + '_wH.pdb'
+    
+    # Skip files already proccessed
+    nametag = '_wH.pdb'
+    if nametag in pdb_path:
+        return
+        
+    print(pdb_path)
+
+    # path/to/1234.pdb --> path/to/1234
+    pdb_no_ext = os.path.splitext(pdb_path)[0]
+    
+    # path/to/1234 --> path/to/1234_wH.pdb
+    pdb_with_hydrogen = pdb_no_ext + nametag
     with pymol2.PyMOL() as pymol:
-        pymol.cmd.load(pdb, pdb_code)
+        pymol.cmd.load(pdb_path)
         pymol.cmd.h_add()
         pymol.cmd.save(pdb_with_hydrogen)
+    
     return pdb_with_hydrogen
+
 
 
 def preprocess_pdb(pdb, pdb_code, parser):
     ''' Prepare PDB for analysis.
     '''
     cleaned_pdb = remove_duplicates(pdb, pdb_code, parser)
-    processed_pdb = add_hydrogen(cleaned_pdb, pdb_code)
+    processed_pdb = add_hydrogen(cleaned_pdb)
 
     # remove temp file
-    os.system('rm {}'.format(cleaned_pdb))
+    os.remove(cleaned_pdb)
 
     # return new file from which model will be read
     return processed_pdb

@@ -177,7 +177,7 @@ class Residue():
                 h.name = atom.rtp_hydrogen[i]
 
 
-    def get_atom_charges(self):
+    def get_atom_charges(self, quiet):
         ''' Get atomic partial charge for a given atom.
         '''
         
@@ -209,7 +209,7 @@ class Residue():
                 # select the first 
                 rtp_name, _, charge, _ = matches[0] 
                 # print notification of atom guess if not exact match
-                if op == 'FIRST_CHAR':
+                if op == 'FIRST_CHAR' and not quiet:
                     print_guess_message(self.name, self.id,
                                         atom.name, rtp_name)
                 # update atom name and charge
@@ -239,8 +239,12 @@ class Residue():
         '''
         w = "Atom {} belonging to residue {} {} has no assigned charge"
         chargeless_atoms = [a for a in self.atoms if a.charge == None]
+        if len(chargeless_atoms) == 0:
+            return True
         for atom in chargeless_atoms:        
             warnings.warn(w.format(atom.fullname, self.name, self.id))
+        return False
+
           
           
     def charges(self):
@@ -257,7 +261,7 @@ class Residue():
             yield atom.coord
     
     
-    def get_water_attributes(self):
+    def get_water_attributes(self, exclude):
         ''' Get properties unique to water, for the identification 
         of oxygen and hydrogen in each water molecule.
         '''
@@ -267,36 +271,12 @@ class Residue():
                 self.oxygen = atom
             elif 'H' in atom.name:
                 self.hydrogen.append(atom)
-            atom.exclusions = tuple(a.coord for a in self.atoms)
-
-"""
-class Water(Residue):
-    ''' Special methods for handling water if electrostatic fields
-    are to be measured as they are felt by water's components.
-    '''
-    def __init__(self, residue):
-        Residue.__init__(self, residue.bio_res_class)
-        self.hydrogen = []
-        for atom in residue.atoms:
-            if atom.element == 'O':
-                self.oxygen = atom
-                self.oxygen.coord = atom.coord
-            elif atom.element == 'H':
-                self.hydrogen.append(atom)
-            atom.set_parent(self)
-        
-        # Water must have 1 oxygen and 2 hydrogen
-        assert self.oxygen is not None
-        assert len(self.hydrogen) == 2
-
-
-    def H_O_bond_vector(self, hydrogen):
-        ''' Get the bond vector between a hydrogen and its 
-        parent oxygen atom. Important for projecting electric
-        field along this bond vector. See ElectricField.py.
-        '''
-        return hydrogen.coord - self.oxygen.coord
-"""
+            if exclude:
+                # Exclude homo atoms from EF calcs
+                atom.exclusions = tuple(a.coord for a in self.atoms)
+            else:
+                # Only atom to exclude from EF calcs is self
+                atom.exclusions = tuple([atom.coord])
 
 
 class ActiveSite():
@@ -362,7 +342,7 @@ class ActiveSite():
         return tuple(int(line[-1]) for line in act_site_lines)
         
                 
-    def get_residues(self, residues):
+    def get_residues(self, residues, interactive):
         ''' Get residues belonging to the active site.
         '''
         act_site_ids = self.resolve_res_ids()
@@ -371,23 +351,24 @@ class ActiveSite():
         print("Processing active site")
         print("Active site residues: ")
         
-        #### Ask if assumed active site residues are true ####
-        
         # Because thare are often multiple chains, make a 
         # unique list of residue names/ids to inquire about
         no_dup = list(set((r.name, r.id) for r in self.as_res))
         
-        # Ask if each residue is valid
-        for res in no_dup:
-            print(res[0], res[1])
-            keep = bool(input("Keep this residue? (y/n) \n"))
-            if not keep:
-                no_dup.remove(res)
+        #### Ask if assumed active site residues are true ####
+        
+        if interactive:
+            # Ask if each residue is valid
+            for res in no_dup:
+                print(res[0], res[1])
+                keep = bool(input("Keep this residue? (y/n) \n"))
+                if not keep:
+                    no_dup.remove(res)
         
         # Residues will now be removed from multiple chains,
         # even though user is asked one the basis of name & id
         self.as_res = [r for r in self.as_res if (r.name, r.id) in no_dup]
-
+        
 
     def get_coords(self):
         ''' Get coordinates of all atoms in the active site.
@@ -463,21 +444,22 @@ class ResiduesInFile:
         self.solute = [r for r in self.process_solute(solute) if r.in_dict]
         self.solvent = [r for r in self.process_solvent(solvent) if r.in_dict]
         self.solute_coords = [a.coord for r in self.solute for a in r.atoms]
+        self.solvent_coords = [a.coord for r in self.solvent for a in r.atoms]
     
     def get_all_molecules(self):
         ''' Return all residues in model.
         '''
         return tuple(self.solute + self.solvent)
 
-    def convert_solvent_to_water_objects(self):
+    def convert_solvent_to_water_objects(self, exclude):
         ''' Add features to solvent unique to water, namely the identifying 
         properties of the parent oxygen coordinate and the bond vectors
         between the H and O of the molecules. 
         '''
         for wat in self.solvent:
-            wat.get_water_attributes()
+            wat.get_water_attributes(exclude)
             
-    def get_charges_and_coords(self, residues):
+    def get_charges_and_coords(self, residues, quiet, strict):
         ''' Extract charge and coords of each atom in the file
         of a certain type (solute/solvent/active site, etc..).
         '''
@@ -490,9 +472,13 @@ class ResiduesInFile:
             # get bond partners, now with new H names
             residue.get_bond_partners()
             # get charges from RTP, now that H have proper names
-            residue.get_atom_charges()
+            residue.get_atom_charges(quiet)
             # check for atoms that are missing charges
-            residue.check_for_chargeless_atoms()
+            all_match = residue.check_for_chargeless_atoms()
+            
+            if strict and not all_match:
+                return tuple([], [])
+                
             # add residue atom info to charges and coords
             charges += residue.charges()
             coords += residue.coords()

@@ -8,7 +8,7 @@ from itertools import combinations
 pdb = "1NEY.pdb"
 pdbcode = pdb[:-4]
 
-
+### DEPRECATED ##
 ###################### GET INFORMATION FROM RTP FILE ######################
 
 

@@ -1,5 +1,8 @@
+import os
+
 class RTPline():
-    ''' To contain information about lines in RTP file'''
+    ''' To contain information about lines in RTP file.
+    '''
     def __init__(self,line):
         self.is_resline = line[0] == '['
         self.is_bond_declaration = 'bond' in line
@@ -16,8 +19,9 @@ class RTPline():
 def fetch_rtp(rtp_file):
     '''Get lines with charges, atom names, etc.,
     from rtp_atoms.rtp. Return dicts with resnames
-    as keys
+    as keys.
     '''
+    print(os.getcwd())
     with open(rtp_file, 'r') as f:
         rtp_file = [line for line in f]
 

@@ -4,13 +4,13 @@ from scipy.spatial import distance_matrix
 
 
 def magnitude(x):
-    ''' Magnitude of an i,j,k vector.
+    '''Magnitude of an i, j, k vector.
     '''
     return sum(x**2)**0.5
 
 
 def dist(x, y):
-    ''' Euclidian distance between cartesian coordinates.
+    '''Euclidean distance between Cartesian coordinates.
     '''
     d = 0
     for i in range(3):
@@ -25,120 +25,86 @@ def dist_le_cutoff(p1, p2, cutoff):
         return False
     if abs(y1 - y2) > cutoff:
         return False
-    if abs(z1-z2) > cutoff:
+    if abs(z1 - z2) > cutoff:
         return False
     if dist(p1, p2) < cutoff:
         return True
     else:
         return False
 
+
 def target_near_coords(target, coords, cutoff):
-    ''' Check if target coord is within cutoff of
-    any of coords.
+    '''Check if the target coordinate is within 
+    the cutoff of any of the coordinates.
     '''
     d = distance_matrix([target], coords)[0]
     return any(d < cutoff)
-        
-        
-class Cube:
-    def __init__(self, p1, p2, edge_length):
-        self.p1 = np.array(p1)
-        self.p2 = np.array(p2)
-        self.edge_length = edge_length
-
-    def check_if_contains_point(self, coords):
-        print(self.p1,self.p2)
-        def contains_point(point):
-            for v in iter(point - self.p1):
-                if v > self.edge_length or v < 0:
-                    return False
-            else:
-                return True
-
-        for point in iter(coords):
-            self.contains_point = contains_point(point)
-            if self.contains_point:
-                break
-
-    def get_central_point(self):
-        return [v + self.edge_length / 2 for v in self.p1]
 
 
-def generate_grid(coords, res, padding):
-    ''' Create a grid of evenly spaced points in the model. Res is
-    the number of points per angstrom and padding is the number of
-    angstroms to add to each wall of the box.
+def magnitude(x):
+    '''Calculate the magnitude in 3 dimensions of
+    a len=3 array of distances.
     '''
-
-    def min_max(arr):
-        ''' Return min and max of each array in *args.
-        '''
-        padded_min = round(min(arr) - padding)
-        padded_max = round(max(arr) + padding)
-        return [padded_min, padded_max]
-
-    # [(x1, y1, z1), ... (xn, yn, zn)] -->
-    # [[x1, ... xn], [y1, ... yn], [z1, ... zn]]
-    zipped = tuple(zip(*coords))
-
-    # bounds of box
-    min_x, max_x = min_max(zipped[0])
-    min_y, max_y = min_max(zipped[1])
-    min_z, max_z = min_max(zipped[2])
-
-    # numbers of points in each direction
-    range_i = tuple(int(x * res) for x in range((max_x - min_x)))
-    range_j = tuple(int(x * res) for x in range((max_y - min_y)))
-    range_k = tuple(int(x * res) for x in range((max_z - min_z)))
-
-    # coord values in each axis of grid
-    X = [i / res + min_x for i in range_i]
-    Y = [i / res + min_y for i in range_j]
-    Z = [i / res + min_z for i in range_k]
-
-    # generate grid as dict of dict of dicts
-    # with keys as indices so that
-    # grid[0][0][0] == min_x, min_y, min_z &
-    # grid[-1][-1][-1] == max_x, max_y, max_z
-    # Sorry, reader.
-    grid = {
-            i:{
-                j:{
-                    k:[X[i], Y[j], Z[k]]
-                    for k in range_k
-                    }
-                for j in range_j
-                }
-            for i in range_i
-        }
-
-    return grid
+    return sum(x**2)**0.5
 
 
-def generate_cubes(coords, res, padding=4):
-    ''' Convert a grid, represented as a dict of dicts
-    of dicts of coords, to a series of cube objects
+class AngleBetween:
+    '''Calculate the angle between two vectors.
     '''
-
-    def get_range(key):
-        ''' Get index/key ranges for dicts with consecutive
-        integers as keys. range max = real range max - 1
-        for reasons evident in operations below.
+    def __init__(self, u):
+        '''Initialize the AngleBetween class with
+        a vector 'u'.
         '''
-        return range(max(key) - 1)
+        self.u = u
 
-    grid = generate_grid(coords, res, padding)
+    def _and(self, v):
+        '''Calculate the angle between vectors 'u'
+        and 'v' in degrees.
+        '''
+        v_norm = magnitude(v)
+        u_norm = magnitude(self.u)
+        cos_theta = np.dot(self.u, v) / (v_norm * u_norm)
+        return np.degrees(np.arccos(cos_theta))
 
-    x_keys = grid.keys()
-    y_keys = grid[0].keys()
-    z_keys = grid[0][0].keys()
-    xyz_keys = (x_keys, y_keys, z_keys)
-    key_ranges = (get_range(k) for k in xyz_keys)
 
-    cubes = []
-    for i, j, k in product(*key_ranges):
-        cube = Cube(p1=grid[i][j][k],
-                    p2=grid[i+1][j+1][k+1],
-                    edge_length=1/res)
-        cubes.append(cube)
-    return cubes
+class Project:
+    '''Project a vector onto another.
+    '''
+    def __init__(self, u):
+        '''Initialize the Project class with
+        a vector 'u'.
+        '''
+        self.u = u
+
+    def onto(self, v):
+        '''Project the vector 'u' onto vector 'v'.
+        '''
+        v_norm = magnitude(v)
+        return (np.dot(self.u, v) / v_norm**2) * v
+
+
+def get_bond_vector(target_atom_coords, other_atom_coords):
+    '''Get the vector of the bond from 
+    hydrogen to parent oxygen.
+    '''
+    a = np.array(target_atom_coords)
+    b = np.array(other_atom_coords) 
+    return a - b 
+
+
+class MagnitudeOfVector:
+    '''Return the magnitude of the net field 
+    vector on a hydrogen projected onto the 
+    bond vector with its parent oxygen.
+    '''
+    def __init__(self, u):
+        self.u = u
+
+    def projected_onto(self, v):
+        u = self.u
+        projected_field = Project(u).onto(v)
+        angle = AngleBetween(u)._and(v)
+        if 0 < angle <= 90:
+            return magnitude(projected_field)
+        elif 90 < angle <= 180:
+            return -magnitude(projected_field)
